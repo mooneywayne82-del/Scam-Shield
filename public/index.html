@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0D0D20" />
+    <title>PI Scam Shield</title>
+    <!-- PI Network SDK (required — runs in PI Browser) -->
+    <script src="https://sdk.minepi.com/pi-sdk.js"></script>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="app">
+
+      <!-- ── Login Screen ───────────────────────────────────────────── -->
+      <section id="login-screen" class="screen" role="main">
+        <div class="logo" aria-hidden="true">🛡️</div>
+        <h1>Scam Shield</h1>
+        <p class="subtitle">
+          Help protect the PI community by reporting suspicious websites
+          directly to moderators.
+        </p>
+        <button id="login-btn" class="btn-primary" type="button">
+          Login with PI Network
+        </button>
+        <button id="dev-bypass-btn" class="btn-dev hidden" type="button">
+          🧪 Dev Preview (Sandbox)
+        </button>
+        <p class="hint">Must be opened in the PI Browser</p>
+      </section>
+
+      <!-- ── Report Screen ──────────────────────────────────────────── -->
+      <section id="report-screen" class="screen hidden" role="main">
+        <header class="app-header">
+          <span class="logo-small" aria-hidden="true">🛡️</span>
+          <div>
+            <h1>Scam Shield</h1>
+            <p id="pioneer-name" class="pioneer-tag"></p>
+          </div>
+        </header>
+
+        <form id="report-form" novalidate>
+          <div class="form-group">
+            <label for="url-input">
+              Suspicious Website URL <span class="required" aria-label="required">*</span>
+            </label>
+            <input
+              type="text"
+              id="url-input"
+              placeholder="e.g. fake-pi-airdrop.com or https://fake-pi-airdrop.com"
+              required
+              maxlength="2048"
+              autocomplete="off"
+              spellcheck="false"
+              inputmode="url"
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="category-select">
+              Category <span class="required" aria-label="required">*</span>
+            </label>
+            <select id="category-select">
+              <option value="phishing">🎣 Phishing</option>
+              <option value="fake_app">📱 Fake PI App</option>
+              <option value="scam">💸 Scam / Fraud</option>
+              <option value="malware">🦠 Malware</option>
+              <option value="other">❓ Other</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="description-input">
+              Description
+              <span class="optional">(optional)</span>
+            </label>
+            <textarea
+              id="description-input"
+              placeholder="Briefly describe what makes this site suspicious — e.g. it asks for your PI passphrase..."
+              maxlength="1000"
+              rows="4"
+            ></textarea>
+            <span id="char-count" class="char-count" aria-live="polite">0 / 1000</span>
+          </div>
+
+          <button type="submit" class="btn-primary" id="submit-btn">
+            Submit Report
+          </button>
+
+          <section class="donation-panel" aria-labelledby="donation-title">
+            <div class="donation-header">
+              <h2 id="donation-title">Support Scam Shield</h2>
+              <p class="donation-copy">
+                If this app helps protect the community, Pioneers can support its upkeep with a Pi donation.
+                Donating is optional, and you do not have to donate if you do not want to.
+              </p>
+            </div>
+
+            <div class="donation-presets" role="group" aria-label="Donation amount presets">
+              <button type="button" class="donation-chip" data-amount="1">1 Pi</button>
+              <button type="button" class="donation-chip" data-amount="3.14">3.14 Pi</button>
+              <button type="button" class="donation-chip" data-amount="5">5 Pi</button>
+              <button type="button" class="donation-chip" data-amount="10">10 Pi</button>
+            </div>
+
+            <div class="form-group donation-group">
+              <label for="donation-amount-input">Custom donation amount</label>
+              <input
+                type="number"
+                id="donation-amount-input"
+                min="0.01"
+                step="0.01"
+                placeholder="Enter Pi amount"
+                inputmode="decimal"
+              />
+            </div>
+
+            <button type="button" class="btn-donate" id="donate-btn">
+              Donate with Pi
+            </button>
+
+            <p id="donation-note" class="donation-note">
+              Donations are optional. If you choose to donate, payments open in Pi Browser and require the Pi payment permission.
+            </p>
+          </section>
+
+          <p class="disclaimer">
+            This application is independently developed by members of the Pi community.
+            It is not sponsored, approved, endorsed or maintained by Pi Network or its core team.
+            All reports submitted through this app are community&#8209;driven and are intended
+            to support a safer experience for everyone. Your reports will be sent directly
+            to the Community Moderators for investigation. Making a false report WILL result
+            in action being taken against your account, so be very careful what you send to us.
+          </p>
+        </form>
+      </section>
+
+    </div>
+
+    <!-- Toast notification (shared between screens) -->
+    <div id="toast" class="toast hidden" role="alert" aria-live="assertive"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
