@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: scam-shield
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/config
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SANDBOX
+        value: "false"
+      - key: PORT
+        generateValue: false
+        value: "10000"
+      - key: DISCORD_WEBHOOK_URL
+        sync: false        # set manually in Render dashboard — never commit real value
+      - key: PI_SERVER_API_KEY
+        sync: false        # set manually in Render dashboard — never commit real value
