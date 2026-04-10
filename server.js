@@ -23,10 +23,11 @@ app.use(
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'", 'sdk.minepi.com'],
-        connectSrc: ["'self'", 'api.minepi.com'],
+        // Pi SDK auth/payment flows may open frames and call SDK endpoints.
+        connectSrc: ["'self'", 'api.minepi.com', 'sdk.minepi.com'],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:'],
-        frameSrc: ["'none'"],
+        frameSrc: ["'self'", 'sdk.minepi.com'],
       },
     },
   })
