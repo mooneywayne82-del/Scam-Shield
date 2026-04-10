@@ -19,15 +19,20 @@ if (!process.env.DISCORD_WEBHOOK_URL) {
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(
   helmet({
+    // Pi Browser auth can rely on cross-origin window messaging.
+    // Helmet defaults like COOP/CORP can block that handshake.
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
+    crossOriginResourcePolicy: false,
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", 'sdk.minepi.com'],
+        scriptSrc: ["'self'", 'https://sdk.minepi.com'],
         // Pi SDK auth/payment flows may open frames and call SDK endpoints.
-        connectSrc: ["'self'", 'api.minepi.com', 'sdk.minepi.com'],
+        connectSrc: ["'self'", 'https://api.minepi.com', 'https://sdk.minepi.com'],
         styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", 'data:'],
-        frameSrc: ["'self'", 'sdk.minepi.com'],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        frameSrc: ["'self'", 'https://sdk.minepi.com', 'https://*.minepi.com'],
       },
     },
   })
