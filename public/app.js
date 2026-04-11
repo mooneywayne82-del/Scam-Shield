@@ -42,7 +42,15 @@ async function initPiSdk() {
     return;
   }
 
-  Pi.init({ version: '2.0', sandbox: appConfig.sandbox });
+  try {
+    await Pi.init({ version: '2.0', sandbox: appConfig.sandbox });
+  } catch (err) {
+    console.error('Failed to initialize Pi SDK:', err);
+    showToast('Failed to initialize PI Network SDK. Please refresh the page.', 'error');
+    const btn = document.getElementById('login-btn');
+    btn.disabled = true;
+    btn.textContent = 'SDK Error — Please Refresh';
+  }
 }
 
 // ── Authentication ────────────────────────────────────────────────────────────
@@ -53,19 +61,29 @@ async function loginWithPi() {
   btn.textContent = 'Connecting…';
 
   try {
+    if (typeof Pi === 'undefined') {
+      throw new Error('Pi SDK not available. Please open in PI Browser.');
+    }
+
     // Request payments scope too so the donation flow can run in Pi Browser
     const auth = await Pi.authenticate(
       ['username', 'payments'],
       async function onIncompletePaymentFound(payment) {
+        console.log('Incomplete payment found:', payment);
         await resolveIncompletePayment(payment);
       }
     );
+
+    if (!auth || !auth.user || !auth.user.username) {
+      throw new Error('Invalid authentication response: missing user data');
+    }
 
     piAuth = auth;
     showReportScreen(auth.user.username);
   } catch (err) {
     console.error('PI authentication error:', err);
-    showToast('Authentication failed. Please try again.', 'error');
+    const errorMsg = err?.message || 'Authentication failed. Please try again.';
+    showToast(errorMsg, 'error');
     btn.disabled = false;
     btn.textContent = 'Login with PI Network';
   }
@@ -292,7 +310,7 @@ function loginAsDev() {
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   // Character counter for description textarea
   const textarea = document.getElementById('description-input');
   const charCount = document.getElementById('char-count');
@@ -313,5 +331,5 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Initialise PI SDK
-  initPiSdk();
+  await initPiSdk();
 });
