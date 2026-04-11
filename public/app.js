@@ -156,6 +156,21 @@ async function fetchPiProfile(accessToken) {
   return data.user;
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
 // ── PI SDK initialisation ─────────────────────────────────────────────────────
 
 async function initPiSdk() {
@@ -222,14 +237,20 @@ async function loginWithPi() {
     // Ask for the minimum permission by default for broader project compatibility.
     const scopes = appConfig.donationsEnabled ? ['username', 'payments'] : ['username'];
 
-    const auth = await Pi.authenticate(
-      scopes,
-      async function onIncompletePaymentFound(payment) {
-        // This callback is relevant when payments scope is enabled.
-        if (!appConfig.donationsEnabled) return;
-        console.log('Incomplete payment found:', payment);
-        await resolveIncompletePayment(payment);
-      }
+    const auth = await withTimeout(
+      Pi.authenticate(
+        scopes,
+        function onIncompletePaymentFound(payment) {
+          // Never block login on background payment reconciliation.
+          if (!appConfig.donationsEnabled) return;
+          console.log('Incomplete payment found:', payment);
+          resolveIncompletePayment(payment).catch((err) => {
+            console.error('Background payment reconciliation failed:', err);
+          });
+        }
+      ),
+      25000,
+      'PI login timed out. Please close and reopen this app in PI Browser, then try again.'
     );
 
     if (!auth || !auth.accessToken || !auth.user || !auth.user.username) {
