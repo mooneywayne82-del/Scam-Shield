@@ -234,8 +234,8 @@ async function loginWithPi() {
   try {
     await ensurePiReady();
 
-    // Ask for the minimum permission by default for broader project compatibility.
-    const scopes = appConfig.donationsEnabled ? ['username', 'payments'] : ['username'];
+    // Keep sign-in minimal and stable; request only identity during login.
+    const scopes = ['username'];
 
     const auth = await withTimeout(
       Pi.authenticate(
