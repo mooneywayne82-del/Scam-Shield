@@ -9,6 +9,119 @@ let toastTimer = null;
 /** Runtime app config loaded from backend. */
 let appConfig = { sandbox: false, donationsEnabled: false };
 
+const PI_COMMUNICATION_REQUEST_TYPE = '@pi:app:sdk:communication_information_request';
+
+function isInIframe() {
+  try {
+    return window.self !== window.top;
+  } catch (error) {
+    if (
+      error instanceof DOMException &&
+      (error.name === 'SecurityError' ||
+        error.code === DOMException.SECURITY_ERR ||
+        error.code === 18)
+    ) {
+      return true;
+    }
+
+    if (error instanceof Error && /Permission denied/i.test(error.message)) {
+      return true;
+    }
+
+    throw error;
+  }
+}
+
+function parseJsonSafely(value) {
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  return typeof value === 'object' && value !== null ? value : null;
+}
+
+function requestParentCredentials() {
+  if (!isInIframe()) {
+    return Promise.resolve(null);
+  }
+
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const timeoutMs = 1500;
+
+  return new Promise((resolve) => {
+    let timeoutId = null;
+
+    const cleanup = (listener) => {
+      window.removeEventListener('message', listener);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    };
+
+    const messageListener = (event) => {
+      if (event.source !== window.parent) return;
+
+      const data = parseJsonSafely(event.data);
+      if (!data || data.type !== PI_COMMUNICATION_REQUEST_TYPE || data.id !== requestId) {
+        return;
+      }
+
+      cleanup(messageListener);
+
+      const payload = typeof data.payload === 'object' && data.payload !== null ? data.payload : {};
+      const accessToken = typeof payload.accessToken === 'string' ? payload.accessToken : null;
+      const appId = typeof payload.appId === 'string' ? payload.appId : null;
+
+      resolve(accessToken ? { accessToken, appId } : null);
+    };
+
+    timeoutId = setTimeout(() => {
+      cleanup(messageListener);
+      resolve(null);
+    }, timeoutMs);
+
+    window.addEventListener('message', messageListener);
+
+    window.parent.postMessage(
+      JSON.stringify({
+        type: PI_COMMUNICATION_REQUEST_TYPE,
+        id: requestId,
+      }),
+      '*'
+    );
+  });
+}
+
+function loadPiSdkScript() {
+  if (typeof Pi !== 'undefined') {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-pi-sdk="1"]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => reject(new Error('Failed to load Pi SDK script.')), { once: true });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://sdk.minepi.com/pi-sdk.js';
+    script.async = true;
+    script.dataset.piSdk = '1';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Pi SDK script.'));
+    document.head.appendChild(script);
+  });
+}
+
+async function fetchPiProfile(accessToken) {
+  const data = await postJson('/api/me', { accessToken });
+  return data.user;
+}
+
 // ── PI SDK initialisation ─────────────────────────────────────────────────────
 
 async function initPiSdk() {
@@ -28,8 +141,33 @@ async function initPiSdk() {
 
   updateDonationAvailability();
 
+  // Support App Studio/iframe preview credential handoff.
+  try {
+    const parentCredentials = await requestParentCredentials();
+    if (parentCredentials?.accessToken) {
+      const user = await fetchPiProfile(parentCredentials.accessToken);
+      piAuth = {
+        accessToken: parentCredentials.accessToken,
+        user,
+      };
+      showReportScreen(user.username);
+      showToast('Authenticated via Pi host session.', 'info');
+      return;
+    }
+  } catch (err) {
+    console.warn('Parent credential handoff failed (falling back to Pi SDK):', err);
+  }
+
   if (typeof Pi === 'undefined') {
-    // SDK not available — likely opened outside PI Browser
+    try {
+      await loadPiSdkScript();
+    } catch (err) {
+      console.warn('Dynamic Pi SDK load failed:', err);
+    }
+  }
+
+  if (typeof Pi === 'undefined') {
+    // SDK still unavailable — likely opened outside PI Browser
     const btn = document.getElementById('login-btn');
     btn.textContent = 'Open in PI Browser';
     btn.disabled = true;
@@ -65,16 +203,20 @@ async function loginWithPi() {
       throw new Error('Pi SDK not available. Please open in PI Browser.');
     }
 
-    // Request payments scope too so the donation flow can run in Pi Browser
+    // Ask for the minimum permission by default for broader project compatibility.
+    const scopes = appConfig.donationsEnabled ? ['username', 'payments'] : ['username'];
+
     const auth = await Pi.authenticate(
-      ['username', 'payments'],
+      scopes,
       async function onIncompletePaymentFound(payment) {
+        // This callback is relevant when payments scope is enabled.
+        if (!appConfig.donationsEnabled) return;
         console.log('Incomplete payment found:', payment);
         await resolveIncompletePayment(payment);
       }
     );
 
-    if (!auth || !auth.user || !auth.user.username) {
+    if (!auth || !auth.accessToken || !auth.user || !auth.user.username) {
       throw new Error('Invalid authentication response: missing user data');
     }
 

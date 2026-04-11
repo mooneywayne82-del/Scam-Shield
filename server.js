@@ -244,6 +244,24 @@ app.get('/api/config', (req, res) => {
   });
 });
 
+app.post('/api/me', async (req, res) => {
+  const { accessToken } = req.body;
+
+  if (!accessToken || typeof accessToken !== 'string') {
+    return res.status(400).json({ error: 'Authentication required.' });
+  }
+
+  try {
+    const piUser = await verifyPiUser(accessToken);
+    return res.json({ user: piUser });
+  } catch (err) {
+    if (err.response?.status === 401) {
+      return res.status(401).json({ error: 'PI Network authentication failed.' });
+    }
+    return res.status(502).json({ error: 'Could not reach PI Network servers.' });
+  }
+});
+
 app.post('/api/payments/:paymentId/approve', async (req, res) => {
   if (!getServerApiKey()) {
     return res.status(503).json({ error: 'Donations are not configured on the server yet.' });
