@@ -29,10 +29,23 @@ app.use(
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'", 'https://sdk.minepi.com'],
         // Pi SDK auth/payment flows may open frames and call SDK endpoints.
-        connectSrc: ["'self'", 'https://api.minepi.com', 'https://sdk.minepi.com'],
+        connectSrc: [
+          "'self'",
+          'https://api.minepi.com',
+          'https://sdk.minepi.com',
+          'https://*.minepi.com',
+          'https://socialchain.app',
+          'https://*.socialchain.app',
+        ],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:', 'https:'],
-        frameSrc: ["'self'", 'https://sdk.minepi.com', 'https://*.minepi.com'],
+        frameSrc: [
+          "'self'",
+          'https://sdk.minepi.com',
+          'https://*.minepi.com',
+          'https://socialchain.app',
+          'https://*.socialchain.app',
+        ],
       },
     },
   })

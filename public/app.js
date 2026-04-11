@@ -8,6 +8,7 @@ let toastTimer = null;
 
 /** Runtime app config loaded from backend. */
 let appConfig = { sandbox: false, donationsEnabled: false };
+let piInitDone = false;
 
 const PI_COMMUNICATION_REQUEST_TYPE = '@pi:app:sdk:communication_information_request';
 
@@ -117,6 +118,39 @@ function loadPiSdkScript() {
   });
 }
 
+function getPiErrorMessage(err) {
+  if (!err) return 'Authentication failed. Please try again.';
+  if (typeof err === 'string') return err;
+
+  const candidates = [err.message, err.error, err.errorMessage, err.details, err.reason]
+    .filter((value) => typeof value === 'string' && value.trim());
+
+  if (candidates.length) return candidates[0];
+  return 'Authentication failed. Please try again.';
+}
+
+async function ensurePiReady() {
+  if (typeof Pi === 'undefined') {
+    await loadPiSdkScript();
+  }
+
+  if (typeof Pi === 'undefined') {
+    throw new Error('Pi SDK is unavailable. Please open this app in PI Browser.');
+  }
+
+  if (!piInitDone) {
+    try {
+      await Pi.init({ version: '2.0', sandbox: appConfig.sandbox });
+      piInitDone = true;
+    } catch (err) {
+      // Retry once after a brief tick for transient SDK readiness races.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await Pi.init({ version: '2.0', sandbox: appConfig.sandbox });
+      piInitDone = true;
+    }
+  }
+}
+
 async function fetchPiProfile(accessToken) {
   const data = await postJson('/api/me', { accessToken });
   return data.user;
@@ -158,36 +192,20 @@ async function initPiSdk() {
     console.warn('Parent credential handoff failed (falling back to Pi SDK):', err);
   }
 
-  if (typeof Pi === 'undefined') {
-    try {
-      await loadPiSdkScript();
-    } catch (err) {
-      console.warn('Dynamic Pi SDK load failed:', err);
-    }
-  }
-
-  if (typeof Pi === 'undefined') {
-    // SDK still unavailable — likely opened outside PI Browser
+  try {
+    await ensurePiReady();
+  } catch (err) {
+    console.error('Failed to initialize Pi SDK:', err);
+    showToast('PI SDK is not ready. Please open this app in PI Browser and try login.', 'error');
     const btn = document.getElementById('login-btn');
-    btn.textContent = 'Open in PI Browser';
-    btn.disabled = true;
+    btn.disabled = false;
+    btn.textContent = 'Login with PI Network';
 
     // In sandbox/dev mode, show a bypass button so the UI can be previewed
     if (appConfig.sandbox) {
       const devBtn = document.getElementById('dev-bypass-btn');
       devBtn.classList.remove('hidden');
     }
-    return;
-  }
-
-  try {
-    await Pi.init({ version: '2.0', sandbox: appConfig.sandbox });
-  } catch (err) {
-    console.error('Failed to initialize Pi SDK:', err);
-    showToast('Failed to initialize PI Network SDK. Please refresh the page.', 'error');
-    const btn = document.getElementById('login-btn');
-    btn.disabled = true;
-    btn.textContent = 'SDK Error — Please Refresh';
   }
 }
 
@@ -199,9 +217,7 @@ async function loginWithPi() {
   btn.textContent = 'Connecting…';
 
   try {
-    if (typeof Pi === 'undefined') {
-      throw new Error('Pi SDK not available. Please open in PI Browser.');
-    }
+    await ensurePiReady();
 
     // Ask for the minimum permission by default for broader project compatibility.
     const scopes = appConfig.donationsEnabled ? ['username', 'payments'] : ['username'];
@@ -224,7 +240,7 @@ async function loginWithPi() {
     showReportScreen(auth.user.username);
   } catch (err) {
     console.error('PI authentication error:', err);
-    const errorMsg = err?.message || 'Authentication failed. Please try again.';
+    const errorMsg = getPiErrorMessage(err);
     showToast(errorMsg, 'error');
     btn.disabled = false;
     btn.textContent = 'Login with PI Network';
