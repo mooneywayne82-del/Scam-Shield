@@ -33,6 +33,7 @@ if (!process.env.DISCORD_WEBHOOK_URL) {
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(
   helmet({
+    frameguard: false,
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
@@ -40,7 +41,8 @@ app.use(
         connectSrc: ["'self'", 'api.minepi.com'],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:'],
-        frameSrc: ["'none'"],
+        frameSrc: ["'self'", 'https://*.minepi.com', 'https://*.pinet.com'],
+        frameAncestors: ["'self'", 'https://*.minepi.com', 'https://*.pinet.com'],
       },
     },
   })
