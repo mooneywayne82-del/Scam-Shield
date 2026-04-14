@@ -3,12 +3,26 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const helmet = require('helmet');
+const session = require('express-session');
+const { MongoClient } = require('mongodb');
 const path = require('path');
 const FormData = require('form-data');
 const puppeteer = require('puppeteer');
 
 const app = express();
 const PI_API_BASE_URL = 'https://api.minepi.com/v2';
+const IS_PROD = process.env.NODE_ENV === 'production';
+const SESSION_SECRET = process.env.SESSION_SECRET?.trim();
+const MONGO_URI = process.env.MONGO_URI?.trim() || null;
+const MONGO_DB_NAME = process.env.MONGO_DB_NAME?.trim() || 'scam_shield';
+const MONGO_PAYMENTS_COLLECTION =
+  process.env.MONGO_PAYMENTS_COLLECTION?.trim() || 'donation_payments';
+let mongoClient = null;
+let paymentCollection = null;
+
+if (process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', 1);
+}
 
 // ── Startup validation ────────────────────────────────────────────────────────
 if (!process.env.DISCORD_WEBHOOK_URL) {
@@ -19,40 +33,39 @@ if (!process.env.DISCORD_WEBHOOK_URL) {
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(
   helmet({
-    // Pi Browser auth can rely on cross-origin window messaging.
-    // Helmet defaults like COOP/CORP can block that handshake.
-    crossOriginEmbedderPolicy: false,
-    crossOriginOpenerPolicy: false,
-    crossOriginResourcePolicy: false,
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", 'https://sdk.minepi.com'],
-        // Pi SDK auth/payment flows may open frames and call SDK endpoints.
-        connectSrc: [
-          "'self'",
-          'https://api.minepi.com',
-          'https://sdk.minepi.com',
-          'https://*.minepi.com',
-          'https://socialchain.app',
-          'https://*.socialchain.app',
-        ],
+        scriptSrc: ["'self'", 'sdk.minepi.com'],
+        connectSrc: ["'self'", 'api.minepi.com'],
         styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", 'data:', 'https:'],
-        frameSrc: [
-          "'self'",
-          'https://sdk.minepi.com',
-          'https://*.minepi.com',
-          'https://socialchain.app',
-          'https://*.socialchain.app',
-        ],
+        imgSrc: ["'self'", 'data:'],
+        frameSrc: ["'none'"],
       },
     },
   })
 );
 
 app.use(express.json({ limit: '10kb' }));
+app.use(
+  session({
+    secret: SESSION_SECRET || 'scam-shield-dev-session-secret',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: IS_PROD,
+      maxAge: 1000 * 60 * 60 * 12,
+    },
+  })
+);
 app.use(express.static(path.join(__dirname, 'public')));
+
+if (IS_PROD && !SESSION_SECRET) {
+  console.error('FATAL: SESSION_SECRET must be set in production.');
+  process.exit(1);
+}
 
 // ── Per-Pioneer cooldown (1 report per 15 minutes per UID) ───────────────────
 
@@ -93,6 +106,18 @@ function getPiServerHeaders() {
   };
 }
 
+async function getPiPayment(paymentId) {
+  const headers = getPiServerHeaders();
+  if (!headers) {
+    throw new Error('Pi Server API key is not configured.');
+  }
+  const response = await axios.get(`${PI_API_BASE_URL}/payments/${encodeURIComponent(paymentId)}`, {
+    headers,
+    timeout: 10000,
+  });
+  return response.data;
+}
+
 async function callPiPaymentApi(endpoint, body) {
   const headers = getPiServerHeaders();
   if (!headers) {
@@ -105,6 +130,64 @@ async function callPiPaymentApi(endpoint, body) {
   });
 
   return response.data;
+}
+
+// ── Donation payment state (idempotency + duplicate protection) ─────────────
+const PAYMENT_STATE_TTL_MS = 48 * 60 * 60 * 1000;
+const paymentState = new Map();
+
+async function getPaymentRecord(paymentId) {
+  if (paymentCollection) {
+    return paymentCollection.findOne({ paymentId });
+  }
+  return paymentState.get(paymentId) || null;
+}
+
+async function upsertPaymentRecord(paymentId, updates) {
+  if (paymentCollection) {
+    const record = { ...updates, paymentId, updatedAt: Date.now() };
+    await paymentCollection.updateOne(
+      { paymentId },
+      {
+        $set: record,
+        $setOnInsert: {
+          createdAt: Date.now(),
+        },
+      },
+      { upsert: true }
+    );
+    return paymentCollection.findOne({ paymentId });
+  }
+
+  const existing = paymentState.get(paymentId) || {};
+  const record = { ...existing, ...updates, paymentId, updatedAt: Date.now() };
+  paymentState.set(paymentId, record);
+  return record;
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [paymentId, record] of paymentState.entries()) {
+    if (now - (record.updatedAt || 0) > PAYMENT_STATE_TTL_MS) {
+      paymentState.delete(paymentId);
+    }
+  }
+}, 60 * 60 * 1000).unref();
+
+async function initMongo() {
+  if (!MONGO_URI) {
+    console.warn('[Payments] MONGO_URI not set; using in-memory payment store.');
+    return;
+  }
+
+  mongoClient = new MongoClient(MONGO_URI, { maxPoolSize: 10 });
+  await mongoClient.connect();
+  const db = mongoClient.db(MONGO_DB_NAME);
+  paymentCollection = db.collection(MONGO_PAYMENTS_COLLECTION);
+
+  await paymentCollection.createIndex({ paymentId: 1 }, { unique: true });
+  await paymentCollection.createIndex({ updatedAt: 1 });
+  console.log(`[Payments] Mongo payment store ready (${MONGO_DB_NAME}.${MONGO_PAYMENTS_COLLECTION})`);
 }
 
 // ── Screenshot helper ────────────────────────────────────────────────────────
@@ -257,32 +340,41 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-app.post('/api/me', async (req, res) => {
-  const { accessToken } = req.body;
-
-  if (!accessToken || typeof accessToken !== 'string') {
-    return res.status(400).json({ error: 'Authentication required.' });
-  }
-
-  try {
-    const piUser = await verifyPiUser(accessToken);
-    return res.json({ user: piUser });
-  } catch (err) {
-    if (err.response?.status === 401) {
-      return res.status(401).json({ error: 'PI Network authentication failed.' });
-    }
-    return res.status(502).json({ error: 'Could not reach PI Network servers.' });
-  }
-});
-
 app.post('/api/payments/:paymentId/approve', async (req, res) => {
   if (!getServerApiKey()) {
     return res.status(503).json({ error: 'Donations are not configured on the server yet.' });
   }
 
+  const paymentId = req.params.paymentId;
+  const sessionUser = req.session.currentUser || null;
+  if (!sessionUser?.uid) {
+    return res.status(401).json({ error: 'Please sign in with Pi before donating.' });
+  }
+
+  const existing = await getPaymentRecord(paymentId);
+  if (existing?.status === 'completed') {
+    return res.json({ success: true, payment: existing.remotePayment || null, alreadyCompleted: true });
+  }
+  if (existing?.uid && existing.uid !== sessionUser.uid) {
+    return res.status(403).json({ error: 'This payment belongs to a different user session.' });
+  }
+
   try {
-    const payment = await callPiPaymentApi(`/payments/${encodeURIComponent(req.params.paymentId)}/approve`, {});
-    return res.json({ success: true, payment });
+    const remotePayment = await getPiPayment(paymentId);
+    const metadataPioneer = remotePayment?.metadata?.pioneer;
+    if (metadataPioneer && metadataPioneer !== sessionUser.username) {
+      return res.status(403).json({ error: 'Payment metadata does not match current Pi user.' });
+    }
+
+    const payment = await callPiPaymentApi(`/payments/${encodeURIComponent(paymentId)}/approve`, {});
+    await upsertPaymentRecord(paymentId, {
+      uid: sessionUser.uid,
+      username: sessionUser.username,
+      status: 'approved',
+      approvedAt: Date.now(),
+      remotePayment: payment,
+    });
+    return res.json({ success: true, payment, alreadyCompleted: false });
   } catch (err) {
     console.error('Pi approve payment error:', err.response?.data || err.message);
     return res.status(502).json({ error: 'Failed to approve Pi payment.' });
@@ -294,21 +386,102 @@ app.post('/api/payments/:paymentId/complete', async (req, res) => {
     return res.status(503).json({ error: 'Donations are not configured on the server yet.' });
   }
 
+  const paymentId = req.params.paymentId;
   const { txid } = req.body;
   if (!txid || typeof txid !== 'string') {
     return res.status(400).json({ error: 'A transaction id is required.' });
   }
 
+  const existing = await getPaymentRecord(paymentId);
+  if (existing?.status === 'completed') {
+    if (existing.txid === txid) {
+      return res.json({ success: true, payment: existing.remotePayment || null, alreadyCompleted: true });
+    }
+    return res.status(409).json({ error: 'Payment already completed with a different transaction id.' });
+  }
+
+  if (!existing) {
+    return res.status(409).json({ error: 'Payment is not approved yet. Please retry donation from Pi Browser.' });
+  }
+
+  const sessionUser = req.session.currentUser || null;
+  if (sessionUser?.uid && existing.uid && sessionUser.uid !== existing.uid) {
+    return res.status(403).json({ error: 'This payment belongs to a different user session.' });
+  }
+
+  if (existing.status === 'completing') {
+    return res.status(409).json({ error: 'Payment completion is already in progress.' });
+  }
+
+  await upsertPaymentRecord(paymentId, { status: 'completing', txid });
+
   try {
     const payment = await callPiPaymentApi(
-      `/payments/${encodeURIComponent(req.params.paymentId)}/complete`,
+      `/payments/${encodeURIComponent(paymentId)}/complete`,
       { txid }
     );
-    return res.json({ success: true, payment });
+    await upsertPaymentRecord(paymentId, {
+      status: 'completed',
+      txid,
+      completedAt: Date.now(),
+      remotePayment: payment,
+    });
+    return res.json({ success: true, payment, alreadyCompleted: false });
   } catch (err) {
+    await upsertPaymentRecord(paymentId, { status: 'approved' });
     console.error('Pi complete payment error:', err.response?.data || err.message);
     return res.status(502).json({ error: 'Failed to complete Pi payment.' });
   }
+});
+
+app.post('/api/user/signin', async (req, res) => {
+  const auth = req.body?.authResult;
+  if (!auth || typeof auth !== 'object') {
+    return res.status(400).json({ error: 'Authentication payload is required.' });
+  }
+
+  const accessToken = auth.accessToken;
+  const declaredUser = auth.user;
+  if (!accessToken || typeof accessToken !== 'string') {
+    return res.status(400).json({ error: 'A valid access token is required.' });
+  }
+
+  try {
+    const verifiedUser = await verifyPiUser(accessToken);
+    if (!declaredUser || declaredUser.uid !== verifiedUser.uid) {
+      return res.status(401).json({ error: 'PI user mismatch. Please authenticate again.' });
+    }
+
+    req.session.currentUser = {
+      uid: verifiedUser.uid,
+      username: verifiedUser.username,
+      accessToken,
+    };
+
+    return res.json({ success: true, user: { uid: verifiedUser.uid, username: verifiedUser.username } });
+  } catch (err) {
+    console.error('PI signin error:', err.response?.data || err.message);
+    if (err.response?.status === 401) {
+      return res.status(401).json({ error: 'Invalid PI access token.' });
+    }
+    return res.status(502).json({ error: 'Could not verify PI identity.' });
+  }
+});
+
+app.get('/api/user/me', (req, res) => {
+  const currentUser = req.session.currentUser;
+  if (!currentUser) {
+    return res.status(401).json({ error: 'Not signed in.' });
+  }
+  return res.json({
+    success: true,
+    user: { uid: currentUser.uid, username: currentUser.username },
+  });
+});
+
+app.get('/api/user/signout', (req, res) => {
+  req.session.currentUser = null;
+  return res.json({ success: true });
 });
 
 const VALID_CATEGORIES = ['phishing', 'fake_app', 'scam', 'malware', 'other'];
@@ -317,10 +490,6 @@ app.post('/api/report', async (req, res) => {
   const { accessToken, url, description, category } = req.body;
 
   // ── Input validation ──────────────────────────────────────────────────────
-  if (!accessToken || typeof accessToken !== 'string') {
-    return res.status(400).json({ error: 'Authentication required.' });
-  }
-
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'A URL is required.' });
   }
@@ -351,16 +520,27 @@ app.post('/api/report', async (req, res) => {
 
   // ── Verify PI identity server-side ────────────────────────────────────────
   let piUser;
+  const sessionUser = req.session.currentUser || null;
+  const tokenToVerify =
+    (sessionUser && typeof sessionUser.accessToken === 'string' && sessionUser.accessToken) ||
+    (typeof accessToken === 'string' ? accessToken : null);
+
+  if (!tokenToVerify) {
+    return res.status(401).json({ error: 'Authentication required. Please log in with Pi Network.' });
+  }
 
   // Dev bypass: only allowed when SANDBOX=true
-  if (accessToken === '__dev__') {
+  if (tokenToVerify === '__dev__') {
     if (process.env.SANDBOX !== 'true') {
       return res.status(401).json({ error: 'Dev bypass is only available in sandbox mode.' });
     }
     piUser = { uid: 'dev-uid-000', username: 'DevPioneer' };
   } else {
     try {
-      piUser = await verifyPiUser(accessToken);
+      piUser = await verifyPiUser(tokenToVerify);
+      if (sessionUser && sessionUser.uid && sessionUser.uid !== piUser.uid) {
+        return res.status(401).json({ error: 'Session user mismatch. Please log in again.' });
+      }
     } catch (err) {
       if (err.response?.status === 401) {
         return res
@@ -442,6 +622,16 @@ app.get('*', (req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Scam Shield running → http://localhost:${PORT}`);
-});
+async function startServer() {
+  try {
+    await initMongo();
+    app.listen(PORT, () => {
+      console.log(`Scam Shield running → http://localhost:${PORT}`);
+    });
+  } catch (err) {
+    console.error('FATAL: Failed to initialise server dependencies:', err.message);
+    process.exit(1);
+  }
+}
+
+startServer();

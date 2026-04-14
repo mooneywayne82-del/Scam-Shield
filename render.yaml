@@ -10,10 +10,20 @@ services:
         value: production
       - key: SANDBOX
         value: "false"
+      - key: TRUST_PROXY
+        value: "true"
       - key: PORT
         generateValue: false
         value: "10000"
       - key: DISCORD_WEBHOOK_URL
-        sync: false        # set manually in Render dashboard — never commit real value
+        sync: false
       - key: PI_SERVER_API_KEY
-        sync: false        # set manually in Render dashboard — never commit real value
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: MONGO_DB_NAME
+        value: scam_shield
+      - key: MONGO_PAYMENTS_COLLECTION
+        value: donation_payments
