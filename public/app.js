@@ -14,7 +14,7 @@ let appConfig = { sandbox: false, donationsEnabled: false };
 async function initPiSdk() {
   // Fetch runtime flags from server so env controls client behavior too
   try {
-    const res = await fetch('/api/config');
+    const res = await fetch('/api/config', { credentials: 'include' });
     if (res.ok) {
       const cfg = await res.json();
       appConfig = {
@@ -126,6 +126,7 @@ async function postJson(url, body) {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify(body),
   });
 
@@ -185,6 +186,7 @@ async function submitReport(e) {
     const response = await fetch('/api/report', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({
         accessToken: piAuth.accessToken,
         url,

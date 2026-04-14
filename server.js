@@ -25,6 +25,14 @@ if (process.env.TRUST_PROXY === 'true') {
   app.set('trust proxy', 1);
 }
 
+/** Render/env may use `true`, `True`, or quoted values — normalize for Pi sandbox behaviour. */
+function isSandboxEnv() {
+  return String(process.env.SANDBOX || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .toLowerCase() === 'true';
+}
+
 // ── Startup validation ────────────────────────────────────────────────────────
 if (!process.env.DISCORD_WEBHOOK_URL) {
   console.error('FATAL: DISCORD_WEBHOOK_URL is not set in your .env file.');
@@ -90,8 +98,8 @@ function setCooldown(uid) {
 // ── PI Network helper ─────────────────────────────────────────────────────────
 /**
  * Verifies Pioneer access token against Pi Platform `/v2/me`.
- * When SANDBOX=true and Pi returns 401 (common with sandbox SDK tokens vs production API),
- * optionally trusts `declaredUser` from the client for development only — never in production.
+ * When sandbox mode is on (see isSandboxEnv), any failure calling `/v2/me` falls back to the
+ * SDK-provided user for development only. Production must set SANDBOX=false.
  */
 async function verifyPiUser(accessToken, { declaredUser } = {}) {
   try {
@@ -101,17 +109,20 @@ async function verifyPiUser(accessToken, { declaredUser } = {}) {
     });
     return response.data; // { uid, username }
   } catch (err) {
-    if (
-      process.env.SANDBOX === 'true' &&
-      err.response?.status === 401 &&
-      declaredUser?.uid &&
-      typeof declaredUser.username === 'string' &&
-      declaredUser.username.length > 0
-    ) {
+    const status = err.response?.status;
+    const hasUid = declaredUser?.uid != null && String(declaredUser.uid).length > 0;
+    const username =
+      typeof declaredUser?.username === 'string' && declaredUser.username.trim().length > 0
+        ? declaredUser.username.trim()
+        : null;
+
+    // In sandbox, Pi SDK tokens often fail /v2/me against production; accept SDK user for dev only.
+    if (isSandboxEnv() && hasUid && declaredUser) {
       console.warn(
-        '[PI] Sandbox: /v2/me rejected token; using client user for dev only. Set SANDBOX=false for strict verification.'
+        '[PI] Sandbox: platform /v2/me failed (%s); trusting SDK user for dev only. Set SANDBOX=false for production.',
+        status ?? err.code ?? err.message
       );
-      return { uid: declaredUser.uid, username: declaredUser.username };
+      return { uid: declaredUser.uid, username: username || 'pioneer' };
     }
     throw err;
   }
@@ -372,7 +383,7 @@ async function sendDiscordReport({ username, uid, url, description, category, wh
 // Frontend config (lets the PI SDK know whether to use sandbox mode)
 app.get('/api/config', (req, res) => {
   res.json({
-    sandbox: process.env.SANDBOX === 'true',
+    sandbox: isSandboxEnv(),
     donationsEnabled: Boolean(getServerApiKey()),
   });
 });
@@ -495,7 +506,10 @@ app.post('/api/user/signin', async (req, res) => {
 
   try {
     const verifiedUser = await verifyPiUser(accessToken, { declaredUser });
-    if (!declaredUser || declaredUser.uid !== verifiedUser.uid) {
+    if (
+      !declaredUser ||
+      String(declaredUser.uid) !== String(verifiedUser.uid)
+    ) {
       return res.status(401).json({ error: 'PI user mismatch. Please authenticate again.' });
     }
 
@@ -578,7 +592,7 @@ app.post('/api/report', async (req, res) => {
 
   // Dev bypass: only allowed when SANDBOX=true
   if (tokenToVerify === '__dev__') {
-    if (process.env.SANDBOX !== 'true') {
+    if (!isSandboxEnv()) {
       return res.status(401).json({ error: 'Dev bypass is only available in sandbox mode.' });
     }
     piUser = { uid: 'dev-uid-000', username: 'DevPioneer' };
