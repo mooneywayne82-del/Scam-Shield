@@ -85,7 +85,14 @@ async function loginWithPi() {
     showReportScreen(auth.user.username);
   } catch (err) {
     console.error('PI authentication error:', err);
-    showToast(err?.message ? `Authentication failed: ${err.message}` : 'Authentication failed. Please try again.', 'error');
+    const raw = err?.message ? String(err.message) : '';
+    const msg =
+      raw && (raw === 'Authentication failed' || /^Authentication failed\b/i.test(raw))
+        ? 'Pi login was cancelled or did not finish. Open this app from the Pi developer checklist in Pi Browser and try again.'
+        : raw
+          ? `Login failed: ${raw}`
+          : 'Login failed. Please try again.';
+    showToast(msg, 'error');
     btn.disabled = false;
     btn.textContent = 'Login with PI Network';
   }

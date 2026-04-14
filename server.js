@@ -96,6 +96,15 @@ function setCooldown(uid) {
 }
 
 // ── PI Network helper ─────────────────────────────────────────────────────────
+function normalizePiMePayload(data) {
+  if (!data || typeof data !== 'object') return null;
+  const uid = data.uid ?? data.user?.uid;
+  const username = data.username ?? data.user?.username;
+  if (uid == null || String(uid).length === 0) return null;
+  const u = typeof username === 'string' && username.trim().length > 0 ? username.trim() : 'pioneer';
+  return { uid, username: u };
+}
+
 /**
  * Verifies Pioneer access token against Pi Platform `/v2/me`.
  * When sandbox mode is on (see isSandboxEnv), any failure calling `/v2/me` falls back to the
@@ -107,7 +116,11 @@ async function verifyPiUser(accessToken, { declaredUser } = {}) {
       headers: { Authorization: `Bearer ${accessToken}` },
       timeout: 8000,
     });
-    return response.data; // { uid, username }
+    const normalized = normalizePiMePayload(response.data);
+    if (!normalized) {
+      throw new Error('Invalid /me response shape');
+    }
+    return normalized;
   } catch (err) {
     const status = err.response?.status;
     const hasUid = declaredUser?.uid != null && String(declaredUser.uid).length > 0;
@@ -504,6 +517,26 @@ app.post('/api/user/signin', async (req, res) => {
     return res.status(400).json({ error: 'A valid access token is required.' });
   }
 
+  // Pi developer checklist + sandbox SDK often cannot be verified via production /v2/me from the server.
+  // When SANDBOX is enabled, trust the SDK auth payload for sign-in only (never do this in production).
+  if (
+    isSandboxEnv() &&
+    declaredUser?.uid != null &&
+    String(declaredUser.uid).length > 0
+  ) {
+    const username =
+      typeof declaredUser.username === 'string' && declaredUser.username.trim().length > 0
+        ? declaredUser.username.trim()
+        : 'pioneer';
+    console.warn('[PI] Sandbox: sign-in without /v2/me verification (dev checklist mode).');
+    req.session.currentUser = {
+      uid: declaredUser.uid,
+      username,
+      accessToken,
+    };
+    return res.json({ success: true, user: { uid: declaredUser.uid, username } });
+  }
+
   try {
     const verifiedUser = await verifyPiUser(accessToken, { declaredUser });
     if (
@@ -596,6 +629,16 @@ app.post('/api/report', async (req, res) => {
       return res.status(401).json({ error: 'Dev bypass is only available in sandbox mode.' });
     }
     piUser = { uid: 'dev-uid-000', username: 'DevPioneer' };
+  } else if (
+    isSandboxEnv() &&
+    sessionUser?.uid &&
+    sessionUser?.accessToken &&
+    tokenToVerify === sessionUser.accessToken
+  ) {
+    piUser = {
+      uid: sessionUser.uid,
+      username: sessionUser.username || 'pioneer',
+    };
   } else {
     try {
       const declaredForVerify =
@@ -603,7 +646,7 @@ app.post('/api/report', async (req, res) => {
           ? { uid: sessionUser.uid, username: sessionUser.username }
           : undefined;
       piUser = await verifyPiUser(tokenToVerify, { declaredUser: declaredForVerify });
-      if (sessionUser && sessionUser.uid && sessionUser.uid !== piUser.uid) {
+      if (sessionUser && sessionUser.uid && String(sessionUser.uid) !== String(piUser.uid)) {
         return res.status(401).json({ error: 'Session user mismatch. Please log in again.' });
       }
     } catch (err) {
