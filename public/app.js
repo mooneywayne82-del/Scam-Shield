@@ -53,13 +53,24 @@ async function loginWithPi() {
   btn.textContent = 'Connecting…';
 
   try {
-    // Match the official demo scopes for a full Pi app session.
-    const auth = await Pi.authenticate(
-      ['username', 'payments', 'roles', 'in_app_notifications'],
-      async function onIncompletePaymentFound(payment) {
-        await resolveIncompletePayment(payment);
-      }
-    );
+    // Request the safest baseline scopes first.
+    let auth;
+    try {
+      auth = await Pi.authenticate(
+        ['username', 'payments'],
+        async function onIncompletePaymentFound(payment) {
+          await resolveIncompletePayment(payment);
+        }
+      );
+    } catch {
+      // Some environments may reject payments scope; retry username-only.
+      auth = await Pi.authenticate(
+        ['username'],
+        async function onIncompletePaymentFound(payment) {
+          await resolveIncompletePayment(payment);
+        }
+      );
+    }
 
     // Demo-style backend sign-in: verify token and create session.
     await postJson('/api/user/signin', { authResult: auth });
@@ -67,7 +78,7 @@ async function loginWithPi() {
     showReportScreen(auth.user.username);
   } catch (err) {
     console.error('PI authentication error:', err);
-    showToast('Authentication failed. Please try again.', 'error');
+    showToast(err?.message ? `Authentication failed: ${err.message}` : 'Authentication failed. Please try again.', 'error');
     btn.disabled = false;
     btn.textContent = 'Login with PI Network';
   }
