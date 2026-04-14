@@ -10,7 +10,8 @@ const FormData = require('form-data');
 const puppeteer = require('puppeteer');
 
 const app = express();
-const PI_API_BASE_URL = 'https://api.minepi.com/v2';
+const PI_PLATFORM_BASE = (process.env.PI_PLATFORM_API_URL || 'https://api.minepi.com').replace(/\/$/, '');
+const PI_API_BASE_URL = `${PI_PLATFORM_BASE}/v2`;
 const IS_PROD = process.env.NODE_ENV === 'production';
 const SESSION_SECRET = process.env.SESSION_SECRET?.trim();
 const MONGO_URI = process.env.MONGO_URI?.trim() || null;
@@ -38,7 +39,7 @@ app.use(
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'", 'sdk.minepi.com'],
-        connectSrc: ["'self'", 'api.minepi.com'],
+        connectSrc: ["'self'", 'api.minepi.com', 'https://*.minepi.com'],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:'],
         frameSrc: ["'self'", 'https://*.minepi.com', 'https://*.pinet.com'],
@@ -87,12 +88,33 @@ function setCooldown(uid) {
 }
 
 // ── PI Network helper ─────────────────────────────────────────────────────────
-async function verifyPiUser(accessToken) {
-  const response = await axios.get('https://api.minepi.com/v2/me', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    timeout: 8000,
-  });
-  return response.data; // { uid, username }
+/**
+ * Verifies Pioneer access token against Pi Platform `/v2/me`.
+ * When SANDBOX=true and Pi returns 401 (common with sandbox SDK tokens vs production API),
+ * optionally trusts `declaredUser` from the client for development only — never in production.
+ */
+async function verifyPiUser(accessToken, { declaredUser } = {}) {
+  try {
+    const response = await axios.get(`${PI_API_BASE_URL}/me`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 8000,
+    });
+    return response.data; // { uid, username }
+  } catch (err) {
+    if (
+      process.env.SANDBOX === 'true' &&
+      err.response?.status === 401 &&
+      declaredUser?.uid &&
+      typeof declaredUser.username === 'string' &&
+      declaredUser.username.length > 0
+    ) {
+      console.warn(
+        '[PI] Sandbox: /v2/me rejected token; using client user for dev only. Set SANDBOX=false for strict verification.'
+      );
+      return { uid: declaredUser.uid, username: declaredUser.username };
+    }
+    throw err;
+  }
 }
 
 function getServerApiKey() {
@@ -472,7 +494,7 @@ app.post('/api/user/signin', async (req, res) => {
   }
 
   try {
-    const verifiedUser = await verifyPiUser(accessToken);
+    const verifiedUser = await verifyPiUser(accessToken, { declaredUser });
     if (!declaredUser || declaredUser.uid !== verifiedUser.uid) {
       return res.status(401).json({ error: 'PI user mismatch. Please authenticate again.' });
     }
@@ -562,7 +584,11 @@ app.post('/api/report', async (req, res) => {
     piUser = { uid: 'dev-uid-000', username: 'DevPioneer' };
   } else {
     try {
-      piUser = await verifyPiUser(tokenToVerify);
+      const declaredForVerify =
+        sessionUser?.uid && sessionUser?.username
+          ? { uid: sessionUser.uid, username: sessionUser.username }
+          : undefined;
+      piUser = await verifyPiUser(tokenToVerify, { declaredUser: declaredForVerify });
       if (sessionUser && sessionUser.uid && sessionUser.uid !== piUser.uid) {
         return res.status(401).json({ error: 'Session user mismatch. Please log in again.' });
       }

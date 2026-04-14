@@ -21,6 +21,8 @@ services:
         sync: false
       - key: PI_SERVER_API_KEY
         sync: false
+      - key: PI_PLATFORM_API_URL
+        sync: false
       - key: SESSION_SECRET
         sync: false
       - key: MONGO_URI
