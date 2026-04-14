@@ -180,14 +180,27 @@ async function initMongo() {
     return;
   }
 
-  mongoClient = new MongoClient(MONGO_URI, { maxPoolSize: 10 });
-  await mongoClient.connect();
-  const db = mongoClient.db(MONGO_DB_NAME);
-  paymentCollection = db.collection(MONGO_PAYMENTS_COLLECTION);
+  try {
+    mongoClient = new MongoClient(MONGO_URI, { maxPoolSize: 10 });
+    await mongoClient.connect();
+    const db = mongoClient.db(MONGO_DB_NAME);
+    paymentCollection = db.collection(MONGO_PAYMENTS_COLLECTION);
 
-  await paymentCollection.createIndex({ paymentId: 1 }, { unique: true });
-  await paymentCollection.createIndex({ updatedAt: 1 });
-  console.log(`[Payments] Mongo payment store ready (${MONGO_DB_NAME}.${MONGO_PAYMENTS_COLLECTION})`);
+    await paymentCollection.createIndex({ paymentId: 1 }, { unique: true });
+    await paymentCollection.createIndex({ updatedAt: 1 });
+    console.log(`[Payments] Mongo payment store ready (${MONGO_DB_NAME}.${MONGO_PAYMENTS_COLLECTION})`);
+  } catch (err) {
+    console.error('[Payments] Mongo unavailable; falling back to in-memory store:', err.message);
+    paymentCollection = null;
+    if (mongoClient) {
+      try {
+        await mongoClient.close();
+      } catch {
+        // Ignore close errors; app continues with in-memory storage.
+      }
+    }
+    mongoClient = null;
+  }
 }
 
 // ── Screenshot helper ────────────────────────────────────────────────────────
@@ -633,15 +646,10 @@ app.get('*', (req, res) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 async function startServer() {
-  try {
-    await initMongo();
-    app.listen(PORT, () => {
-      console.log(`Scam Shield running → http://localhost:${PORT}`);
-    });
-  } catch (err) {
-    console.error('FATAL: Failed to initialise server dependencies:', err.message);
-    process.exit(1);
-  }
+  await initMongo();
+  app.listen(PORT, () => {
+    console.log(`Scam Shield running → http://localhost:${PORT}`);
+  });
 }
 
 startServer();
