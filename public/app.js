@@ -52,24 +52,37 @@ async function loginWithPi() {
   btn.disabled = true;
   btn.textContent = 'Connecting…';
 
+  const authenticateWithTimeout = async (scopes, timeoutMs = 20000) => {
+    let timeoutHandle;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error('Pi login timed out. Please reopen in Pi Browser and try again.'));
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([
+        Pi.authenticate(
+          scopes,
+          async function onIncompletePaymentFound(payment) {
+            await resolveIncompletePayment(payment);
+          }
+        ),
+        timeoutPromise,
+      ]);
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+  };
+
   try {
     // Request the safest baseline scopes first.
     let auth;
     try {
-      auth = await Pi.authenticate(
-        ['username', 'payments'],
-        async function onIncompletePaymentFound(payment) {
-          await resolveIncompletePayment(payment);
-        }
-      );
+      auth = await authenticateWithTimeout(['username', 'payments']);
     } catch {
       // Some environments may reject payments scope; retry username-only.
-      auth = await Pi.authenticate(
-        ['username'],
-        async function onIncompletePaymentFound(payment) {
-          await resolveIncompletePayment(payment);
-        }
-      );
+      auth = await authenticateWithTimeout(['username']);
     }
 
     // Demo-style backend sign-in: verify token and create session.
