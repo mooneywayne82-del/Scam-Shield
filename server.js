@@ -47,7 +47,13 @@ app.use(
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'", 'sdk.minepi.com'],
-        connectSrc: ["'self'", 'api.minepi.com', 'https://*.minepi.com'],
+        connectSrc: [
+          "'self'",
+          'api.minepi.com',
+          'https://*.minepi.com',
+          'https://*.pinet.com',
+          'https://sdk.minepi.com',
+        ],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:'],
         frameSrc: ["'self'", 'https://*.minepi.com', 'https://*.pinet.com'],

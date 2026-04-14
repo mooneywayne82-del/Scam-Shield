@@ -42,7 +42,16 @@ async function initPiSdk() {
     return;
   }
 
-  Pi.init({ version: '2.0', sandbox: appConfig.sandbox });
+  await applyPiSdkInit();
+}
+
+/** Pi.init may return a Promise; always await before authenticate. */
+async function applyPiSdkInit() {
+  if (typeof Pi === 'undefined') return;
+  const initResult = Pi.init({ version: '2.0', sandbox: appConfig.sandbox });
+  if (initResult && typeof initResult.then === 'function') {
+    await initResult;
+  }
 }
 
 // ── Authentication ────────────────────────────────────────────────────────────
@@ -51,6 +60,13 @@ async function loginWithPi() {
   const btn = document.getElementById('login-btn');
   btn.disabled = true;
   btn.textContent = 'Connecting…';
+
+  if (typeof Pi === 'undefined') {
+    showToast('Pi Browser is required. Open this app from Pi → Develop → your app (do not use Chrome).', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Login with PI Network';
+    return;
+  }
 
   const authenticateWithTimeout = async (scopes, timeoutMs = 20000) => {
     let timeoutHandle;
@@ -76,8 +92,22 @@ async function loginWithPi() {
   };
 
   try {
-    // Keep login scope minimal for maximum Pi Browser compatibility.
-    const auth = await authenticateWithTimeout(['username']);
+    await initPiSdk();
+
+    const scopeAttempts = [[], ['username'], ['username', 'payments']];
+    let auth;
+    let lastAuthErr;
+    for (const scopes of scopeAttempts) {
+      try {
+        auth = await authenticateWithTimeout(scopes);
+        break;
+      } catch (e) {
+        lastAuthErr = e;
+      }
+    }
+    if (!auth) {
+      throw lastAuthErr || new Error('Pi.authenticate failed');
+    }
 
     // Demo-style backend sign-in: verify token and create session.
     await postJson('/api/user/signin', { authResult: auth });
@@ -88,7 +118,9 @@ async function loginWithPi() {
     const raw = err?.message ? String(err.message) : '';
     const msg =
       raw && (raw === 'Authentication failed' || /^Authentication failed\b/i.test(raw))
-        ? 'Pi login was cancelled or did not finish. Open this app from the Pi developer checklist in Pi Browser and try again.'
+        ? appConfig.sandbox
+          ? 'Pi login failed in sandbox mode. Confirm Pi Utilities → Authorize Sandbox is done. If you use a live https URL (e.g. Render), set SANDBOX=false in Render, redeploy, and try again.'
+          : 'Pi login was cancelled or did not finish. Confirm the App URL in Pi Developer Portal matches this site exactly, then open the app from Develop in Pi Browser.'
         : raw
           ? `Login failed: ${raw}`
           : 'Login failed. Please try again.';
