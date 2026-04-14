@@ -76,14 +76,8 @@ async function loginWithPi() {
   };
 
   try {
-    // Request the safest baseline scopes first.
-    let auth;
-    try {
-      auth = await authenticateWithTimeout(['username', 'payments']);
-    } catch {
-      // Some environments may reject payments scope; retry username-only.
-      auth = await authenticateWithTimeout(['username']);
-    }
+    // Keep login scope minimal for maximum Pi Browser compatibility.
+    const auth = await authenticateWithTimeout(['username']);
 
     // Demo-style backend sign-in: verify token and create session.
     await postJson('/api/user/signin', { authResult: auth });
