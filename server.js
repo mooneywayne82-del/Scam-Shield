@@ -340,6 +340,16 @@ app.get('/api/config', (req, res) => {
   });
 });
 
+// Pi Developer Portal domain ownership verification endpoint.
+// Expected path: https://your-domain/validation-key.txt
+app.get('/validation-key.txt', (req, res) => {
+  const key = process.env.DOMAIN_VALIDATION_KEY?.trim();
+  if (!key) {
+    return res.status(404).type('text/plain').send('DOMAIN_VALIDATION_KEY is not configured');
+  }
+  return res.type('text/plain').send(key);
+});
+
 app.post('/api/payments/:paymentId/approve', async (req, res) => {
   if (!getServerApiKey()) {
     return res.status(503).json({ error: 'Donations are not configured on the server yet.' });

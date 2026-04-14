@@ -25,6 +25,8 @@ services:
         sync: false
       - key: MONGO_URI
         sync: false
+      - key: DOMAIN_VALIDATION_KEY
+        sync: false
       - key: MONGO_DB_NAME
         value: scam_shield
       - key: MONGO_PAYMENTS_COLLECTION
