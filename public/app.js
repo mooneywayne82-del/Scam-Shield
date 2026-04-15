@@ -119,7 +119,7 @@ async function loginWithPi() {
       raw && (raw === 'Authentication failed' || /^Authentication failed\b/i.test(raw))
         ? appConfig.sandbox
           ? `Pi login failed in sandbox mode on ${currentOrigin}. Confirm Pi Utilities -> Authorize Sandbox is done. If this is your live production site, set SANDBOX=false on the server and redeploy.`
-          : `Pi login was cancelled or did not finish on ${currentOrigin}. Confirm this exact origin matches Pi Developer Portal App URL, then open the app from Develop in Pi Browser (not a saved bookmark).`
+          : `Pi login was cancelled or did not finish on ${currentOrigin}. Confirm this exact origin matches Pi Developer Portal App URL, then open the app from Develop in Pi Browser (not a saved bookmark). If your app shows Testnet in Develop, set SANDBOX=true or switch to a Mainnet app.`
         : raw
           ? `Login failed: ${raw}`
           : 'Login failed. Please try again.';
