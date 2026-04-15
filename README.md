@@ -4,6 +4,12 @@ A web app that lets PI Network Pioneers report suspicious websites to your commu
 
 ---
 
+## Release notes
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for release checkpoints and troubleshooting-focused updates.
+
+---
+
 ## Features
 
 - **PI Network login** — Pioneers authenticate via the PI Browser; identity is verified server-side against the PI Platform API
