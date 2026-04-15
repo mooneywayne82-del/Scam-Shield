@@ -33,12 +33,6 @@ async function initPiSdk() {
     const btn = document.getElementById('login-btn');
     btn.textContent = 'Open in PI Browser';
     btn.disabled = true;
-
-    // In sandbox/dev mode, show a bypass button so the UI can be previewed
-    if (appConfig.sandbox) {
-      const devBtn = document.getElementById('dev-bypass-btn');
-      devBtn.classList.remove('hidden');
-    }
     return;
   }
 
@@ -116,11 +110,13 @@ async function loginWithPi() {
   } catch (err) {
     console.error('PI authentication error:', err);
     const raw = err?.message ? String(err.message) : '';
+    const currentOrigin =
+      typeof window !== 'undefined' ? window.location.origin || window.location.href : 'unknown-origin';
     const msg =
       raw && (raw === 'Authentication failed' || /^Authentication failed\b/i.test(raw))
         ? appConfig.sandbox
-          ? 'Pi login failed in sandbox mode. Confirm Pi Utilities → Authorize Sandbox is done. If you use a live https URL (e.g. Render), set SANDBOX=false in Render, redeploy, and try again.'
-          : 'Pi login was cancelled or did not finish. Confirm the App URL in Pi Developer Portal matches this site exactly, then open the app from Develop in Pi Browser.'
+          ? `Pi login failed in sandbox mode on ${currentOrigin}. Confirm Pi Utilities -> Authorize Sandbox is done. If this is your live production site, set SANDBOX=false on the server and redeploy.`
+          : `Pi login was cancelled or did not finish on ${currentOrigin}. Confirm this exact origin matches Pi Developer Portal App URL, then open the app from Develop in Pi Browser (not a saved bookmark).`
         : raw
           ? `Login failed: ${raw}`
           : 'Login failed. Please try again.';
@@ -339,19 +335,6 @@ function showToast(message, type = 'info') {
   toastTimer = setTimeout(() => toast.classList.add('hidden'), 4500);
 }
 
-// ── Dev bypass ───────────────────────────────────────────────────────────────
-
-function loginAsDev() {
-  // Use a sentinel token; the server will substitute a mock user
-  piAuth = {
-    accessToken: '__dev__',
-    user: { uid: 'dev-uid-000', username: 'DevPioneer' },
-  };
-  postJson('/api/user/signin', { authResult: piAuth }).catch(() => {});
-  showReportScreen('DevPioneer');
-  showToast('Dev bypass active — reports go to Discord as @DevPioneer', 'info');
-}
-
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -364,7 +347,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Button / form listeners
   document.getElementById('login-btn').addEventListener('click', loginWithPi);
-  document.getElementById('dev-bypass-btn').addEventListener('click', loginAsDev);
   document.getElementById('report-form').addEventListener('submit', submitReport);
   document.getElementById('donate-btn').addEventListener('click', startDonation);
   document.querySelectorAll('.donation-chip').forEach((chip) => {
