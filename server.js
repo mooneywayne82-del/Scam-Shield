@@ -33,6 +33,13 @@ function isSandboxEnv() {
     .toLowerCase() === 'true';
 }
 
+function isPiOnlyLoginEnv() {
+  return String(process.env.PI_ONLY_LOGIN || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .toLowerCase() === 'true';
+}
+
 // ── Startup validation ────────────────────────────────────────────────────────
 if (!process.env.DISCORD_WEBHOOK_URL) {
   console.error('FATAL: DISCORD_WEBHOOK_URL is not set in your .env file.');
@@ -404,6 +411,7 @@ app.get('/api/config', (req, res) => {
   res.json({
     sandbox: isSandboxEnv(),
     donationsEnabled: Boolean(getServerApiKey()),
+    piOnlyLogin: isPiOnlyLoginEnv(),
   });
 });
 

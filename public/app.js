@@ -7,7 +7,7 @@ let piAuth = null;
 let toastTimer = null;
 
 /** Runtime app config loaded from backend. */
-let appConfig = { sandbox: false, donationsEnabled: false };
+let appConfig = { sandbox: false, donationsEnabled: false, piOnlyLogin: false };
 
 // ── PI SDK initialisation ─────────────────────────────────────────────────────
 
@@ -20,6 +20,7 @@ async function initPiSdk() {
       appConfig = {
         sandbox: Boolean(cfg.sandbox),
         donationsEnabled: Boolean(cfg.donationsEnabled),
+        piOnlyLogin: Boolean(cfg.piOnlyLogin),
       };
     }
   } catch {
@@ -103,8 +104,10 @@ async function loginWithPi() {
       throw lastAuthErr || new Error('Pi.authenticate failed');
     }
 
-    // Demo-style backend sign-in: verify token and create session.
-    await postJson('/api/user/signin', { authResult: auth });
+    if (!appConfig.piOnlyLogin) {
+      // Default mode: verify token server-side and establish a session.
+      await postJson('/api/user/signin', { authResult: auth });
+    }
     piAuth = auth;
     showReportScreen(auth.user.username);
   } catch (err) {
