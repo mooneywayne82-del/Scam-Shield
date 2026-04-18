@@ -9,10 +9,27 @@ let toastTimer = null;
 /** Runtime app config loaded from backend. */
 let appConfig = { sandbox: false, donationsEnabled: false, piOnlyLogin: false };
 
-// ── PI SDK initialisation ─────────────────────────────────────────────────────
+/** Same SDK URL as passphrase-secure `PI_NETWORK_CONFIG.SDK_URL`. */
+const PI_SDK_URL = 'https://sdk.minepi.com/pi-sdk.js';
 
-async function initPiSdk() {
-  // Fetch runtime flags from server so env controls client behavior too
+// ── PI SDK (matches passphrase-secure `loadPiSDK` + init/authenticate sequence) ─
+
+function loadPiSDK() {
+  return new Promise((resolve, reject) => {
+    if (typeof Pi !== 'undefined') {
+      resolve();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = PI_SDK_URL;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Pi SDK script'));
+    document.head.appendChild(script);
+  });
+}
+
+async function refreshAppConfig() {
   try {
     const res = await fetch('/api/config', { credentials: 'include' });
     if (res.ok) {
@@ -26,18 +43,6 @@ async function initPiSdk() {
   } catch {
     // Non-fatal — keep defaults
   }
-
-  updateDonationAvailability();
-
-  if (typeof Pi === 'undefined') {
-    // SDK not available — likely opened outside PI Browser
-    const btn = document.getElementById('login-btn');
-    btn.textContent = 'Open in PI Browser';
-    btn.disabled = true;
-    return;
-  }
-
-  await applyPiSdkInit();
 }
 
 /** Pi.init may return a Promise; always await before authenticate. */
@@ -49,6 +54,32 @@ async function applyPiSdkInit() {
   }
 }
 
+async function bootstrapPiClient() {
+  await refreshAppConfig();
+  updateDonationAvailability();
+
+  try {
+    await loadPiSDK();
+  } catch (err) {
+    console.error('Pi SDK load failed:', err);
+    const btn = document.getElementById('login-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Pi SDK failed to load';
+    }
+    return;
+  }
+
+  if (typeof Pi === 'undefined') {
+    const btn = document.getElementById('login-btn');
+    if (btn) {
+      btn.textContent = 'Open in PI Browser';
+      btn.disabled = true;
+    }
+    return;
+  }
+}
+
 // ── Authentication ────────────────────────────────────────────────────────────
 
 async function loginWithPi() {
@@ -56,73 +87,33 @@ async function loginWithPi() {
   btn.disabled = true;
   btn.textContent = 'Connecting…';
 
-  if (typeof Pi === 'undefined') {
-    showToast('Pi Browser is required. Open this app from Pi → Develop → your app (do not use Chrome).', 'error');
-    btn.disabled = false;
-    btn.textContent = 'Login with PI Network';
-    return;
-  }
-
-  const authenticateWithTimeout = async (scopes, timeoutMs = 20000) => {
-    let timeoutHandle;
-    const timeoutPromise = new Promise((_, reject) => {
-      timeoutHandle = setTimeout(() => {
-        reject(new Error('Pi login timed out. Please reopen in Pi Browser and try again.'));
-      }, timeoutMs);
-    });
-
-    try {
-      return await Promise.race([
-        Pi.authenticate(
-          scopes,
-          async function onIncompletePaymentFound(payment) {
-            await resolveIncompletePayment(payment);
-          }
-        ),
-        timeoutPromise,
-      ]);
-    } finally {
-      clearTimeout(timeoutHandle);
-    }
-  };
-
   try {
-    await initPiSdk();
+    await refreshAppConfig();
+    await loadPiSDK();
 
-    const scopeAttempts = [[], ['username'], ['username', 'payments']];
-    let auth;
-    let lastAuthErr;
-    for (const scopes of scopeAttempts) {
-      try {
-        auth = await authenticateWithTimeout(scopes);
-        break;
-      } catch (e) {
-        lastAuthErr = e;
-      }
+    if (typeof Pi === 'undefined') {
+      throw new Error('Pi SDK not available. Please open this app inside the Pi Browser.');
     }
-    if (!auth) {
-      throw lastAuthErr || new Error('Pi.authenticate failed');
+
+    await applyPiSdkInit();
+
+    const piAuthResult = await Pi.authenticate(['username', 'payments']);
+
+    if (!piAuthResult?.accessToken || !piAuthResult?.user?.uid) {
+      throw new Error('Authentication failed. Please try again.');
     }
 
     if (!appConfig.piOnlyLogin) {
-      // Default mode: verify token server-side and establish a session.
-      await postJson('/api/user/signin', { authResult: auth });
+      await postJson('/api/user/signin', { authResult: piAuthResult });
     }
-    piAuth = auth;
-    showReportScreen(auth.user.username);
+    piAuth = piAuthResult;
+    showReportScreen(piAuthResult.user.username);
   } catch (err) {
-    console.error('PI authentication error:', err);
-    const raw = err?.message ? String(err.message) : '';
-    const currentOrigin =
-      typeof window !== 'undefined' ? window.location.origin || window.location.href : 'unknown-origin';
+    console.error('Pi Network initialization failed:', err);
     const msg =
-      raw && (raw === 'Authentication failed' || /^Authentication failed\b/i.test(raw))
-        ? appConfig.sandbox
-          ? `Pi login failed in sandbox mode on ${currentOrigin}. Confirm Pi Utilities -> Authorize Sandbox is done. If this is your live production site, set SANDBOX=false on the server and redeploy.`
-          : `Pi login was cancelled or did not finish on ${currentOrigin}. Confirm this exact origin matches Pi Developer Portal App URL, then open the app from Develop in Pi Browser (not a saved bookmark). If your app shows Testnet in Develop, set SANDBOX=true or switch to a Mainnet app.`
-        : raw
-          ? `Login failed: ${raw}`
-          : 'Login failed. Please try again.';
+      err instanceof Error
+        ? `Authentication error: ${err.message}`
+        : 'Failed to authenticate. Please refresh and try again.';
     showToast(msg, 'error');
     btn.disabled = false;
     btn.textContent = 'Login with PI Network';
@@ -180,21 +171,6 @@ async function postJson(url, body) {
   }
 
   return data;
-}
-
-async function resolveIncompletePayment(payment) {
-  if (!payment?.identifier || !payment?.transaction?.txid) {
-    console.warn('Incomplete payment found but missing txid:', payment);
-    return;
-  }
-
-  try {
-    await postJson(`/api/payments/${encodeURIComponent(payment.identifier)}/complete`, {
-      txid: payment.transaction.txid,
-    });
-  } catch (err) {
-    console.error('Failed to complete previous payment:', err);
-  }
 }
 
 // ── Report submission ─────────────────────────────────────────────────────────
@@ -359,6 +335,5 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.donation-chip').forEach((chip) => chip.classList.remove('active'));
   });
 
-  // Initialise PI SDK
-  initPiSdk();
+  bootstrapPiClient();
 });
