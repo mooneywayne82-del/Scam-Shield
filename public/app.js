@@ -82,6 +82,22 @@ async function bootstrapPiClient() {
 
 // ── Authentication ────────────────────────────────────────────────────────────
 
+/** Pi SDK often returns only the message "Authentication failed" — expand with actionable context. */
+function formatPiLoginError(err) {
+  const raw = err instanceof Error ? String(err.message) : '';
+  const origin =
+    typeof window !== 'undefined' ? window.location.origin || window.location.href : 'this site';
+
+  if (raw && (raw === 'Authentication failed' || /^Authentication failed\b/i.test(raw))) {
+    return appConfig.sandbox
+      ? `Pi login failed in sandbox (${origin}). In Pi Browser: Utilities → Authorize Sandbox. Production must use SANDBOX=false on the server.`
+      : `Pi login did not finish (${origin}). Open only in Pi Browser via Pi → Develop → your app (not Chrome/Safari). This URL must match your Pi Developer Portal app URL. Testnet app? Set SANDBOX=true on the server.`;
+  }
+
+  if (raw) return `Login failed: ${raw}`;
+  return 'Login failed. Please try again.';
+}
+
 async function loginWithPi() {
   const btn = document.getElementById('login-btn');
   btn.disabled = true;
@@ -92,15 +108,58 @@ async function loginWithPi() {
     await loadPiSDK();
 
     if (typeof Pi === 'undefined') {
-      throw new Error('Pi SDK not available. Please open this app inside the Pi Browser.');
+      showToast(
+        'Pi Browser is required. Open this app from Pi → Develop → your app (not Chrome or Safari).',
+        'error'
+      );
+      btn.disabled = false;
+      btn.textContent = 'Login with PI Network';
+      return;
     }
 
     await applyPiSdkInit();
 
-    const piAuthResult = await Pi.authenticate(['username', 'payments']);
+    const authenticateWithTimeout = async (scopes, timeoutMs = 25000) => {
+      let timeoutHandle;
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error('Pi login timed out. Open from Pi → Develop and try again.'));
+        }, timeoutMs);
+      });
+      try {
+        return await Promise.race([
+          Pi.authenticate(
+            scopes,
+            async function onIncompletePaymentFound(payment) {
+              await resolveIncompletePayment(payment);
+            }
+          ),
+          timeoutPromise,
+        ]);
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
+    };
+
+    // Narrow scopes first — some environments reject ['username','payments'] until wallet is ready.
+    const scopeAttempts = [[], ['username'], ['username', 'payments']];
+    let piAuthResult;
+    let lastErr;
+    for (const scopes of scopeAttempts) {
+      try {
+        const auth = await authenticateWithTimeout(scopes);
+        if (auth?.accessToken && auth?.user?.uid) {
+          piAuthResult = auth;
+          break;
+        }
+        lastErr = new Error('Authentication failed. Please try again.');
+      } catch (e) {
+        lastErr = e;
+      }
+    }
 
     if (!piAuthResult?.accessToken || !piAuthResult?.user?.uid) {
-      throw new Error('Authentication failed. Please try again.');
+      throw lastErr || new Error('Authentication failed. Please try again.');
     }
 
     if (!appConfig.piOnlyLogin) {
@@ -109,12 +168,8 @@ async function loginWithPi() {
     piAuth = piAuthResult;
     showReportScreen(piAuthResult.user.username);
   } catch (err) {
-    console.error('Pi Network initialization failed:', err);
-    const msg =
-      err instanceof Error
-        ? `Authentication error: ${err.message}`
-        : 'Failed to authenticate. Please refresh and try again.';
-    showToast(msg, 'error');
+    console.error('PI authentication error:', err);
+    showToast(formatPiLoginError(err), 'error');
     btn.disabled = false;
     btn.textContent = 'Login with PI Network';
   }
@@ -171,6 +226,20 @@ async function postJson(url, body) {
   }
 
   return data;
+}
+
+async function resolveIncompletePayment(payment) {
+  if (!payment?.identifier || !payment?.transaction?.txid) {
+    console.warn('Incomplete payment found but missing txid:', payment);
+    return;
+  }
+  try {
+    await postJson(`/api/payments/${encodeURIComponent(payment.identifier)}/complete`, {
+      txid: payment.transaction.txid,
+    });
+  } catch (err) {
+    console.error('Failed to complete previous payment:', err);
+  }
 }
 
 // ── Report submission ─────────────────────────────────────────────────────────
