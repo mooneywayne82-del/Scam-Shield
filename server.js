@@ -170,6 +170,35 @@ function areDonationsEnabled() {
   return Boolean(getServerApiKey()) && !isDonationsDisabledEnv();
 }
 
+/** Use official pi-backend (https://github.com/pi-apps/pi-nodejs) for getPayment + completePayment instead of raw axios. */
+function usePiBackendSdk() {
+  return String(process.env.USE_PI_BACKEND_SDK || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .toLowerCase() === 'true';
+}
+
+function getAppWalletPrivateSeed() {
+  return process.env.PI_APP_WALLET_PRIVATE_SEED?.trim() || null;
+}
+
+let piBackendSingleton = null;
+
+/** PiNetwork requires API key + wallet seed at construct time (see pi-nodejs README), even if we only call getPayment/completePayment. */
+function getPiBackendNetwork() {
+  if (!usePiBackendSdk()) return null;
+  const apiKey = getServerApiKey();
+  const seed = getAppWalletPrivateSeed();
+  if (!apiKey || !seed) return null;
+  if (!piBackendSingleton) {
+    // Official Pi Node SDK — CommonJS build (https://github.com/pi-apps/pi-nodejs)
+    const PiNetwork = require('pi-backend').default;
+    const options = PI_PLATFORM_BASE !== 'https://api.minepi.com' ? { baseUrl: PI_PLATFORM_BASE } : undefined;
+    piBackendSingleton = new PiNetwork(apiKey, seed, options);
+  }
+  return piBackendSingleton;
+}
+
 function getPiServerHeaders() {
   const apiKey = getServerApiKey();
   if (!apiKey) return null;
@@ -180,6 +209,11 @@ function getPiServerHeaders() {
 }
 
 async function getPiPayment(paymentId) {
+  const pi = getPiBackendNetwork();
+  if (pi) {
+    return pi.getPayment(paymentId);
+  }
+
   const headers = getPiServerHeaders();
   if (!headers) {
     throw new Error('Pi Server API key is not configured.');
@@ -189,6 +223,15 @@ async function getPiPayment(paymentId) {
     timeout: 10000,
   });
   return response.data;
+}
+
+/** Matches pi-backend `completePayment` (POST /v2/payments/:id/complete). */
+async function completePiPaymentWithPlatform(paymentId, txid) {
+  const pi = getPiBackendNetwork();
+  if (pi) {
+    return pi.completePayment(paymentId, txid);
+  }
+  return callPiPaymentApi(`/payments/${encodeURIComponent(paymentId)}/complete`, { txid });
 }
 
 async function callPiPaymentApi(endpoint, body) {
@@ -520,10 +563,7 @@ app.post('/api/payments/:paymentId/complete', async (req, res) => {
   await upsertPaymentRecord(paymentId, { status: 'completing', txid });
 
   try {
-    const payment = await callPiPaymentApi(
-      `/payments/${encodeURIComponent(paymentId)}/complete`,
-      { txid }
-    );
+    const payment = await completePiPaymentWithPlatform(paymentId, txid);
     await upsertPaymentRecord(paymentId, {
       status: 'completed',
       txid,
@@ -756,6 +796,68 @@ app.post('/api/report', async (req, res) => {
   });
 });
 
+/**
+ * Full A2U flow from pi-nodejs README: createPayment → submitPayment → completePayment.
+ * Sends Pi **from your app wallet** to `uid` — not the donation (U2A) path.
+ * Requires PI_A2U_README_FLOW_TEST=true and header X-Pi-A2u-Test-Secret matching PI_A2U_README_FLOW_TEST_SECRET.
+ */
+app.post('/api/dev/pi-backend-a2u-readme-flow', async (req, res) => {
+  const enabled =
+    String(process.env.PI_A2U_README_FLOW_TEST || '')
+      .trim()
+      .replace(/^['"]|['"]$/g, '')
+      .toLowerCase() === 'true';
+  if (!enabled) {
+    return res.status(404).json({ error: 'Not found.' });
+  }
+
+  const expectedSecret = process.env.PI_A2U_README_FLOW_TEST_SECRET?.trim();
+  const gotSecret = req.get('x-pi-a2u-test-secret');
+  if (!expectedSecret || gotSecret !== expectedSecret) {
+    return res.status(401).json({ error: 'Missing or invalid X-Pi-A2u-Test-Secret header.' });
+  }
+
+  const pi = getPiBackendNetwork();
+  if (!pi) {
+    return res.status(503).json({
+      error:
+        'USE_PI_BACKEND_SDK=true, PI_SERVER_API_KEY, and PI_APP_WALLET_PRIVATE_SEED are required for this endpoint.',
+    });
+  }
+
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const uid = typeof body.uid === 'string' ? body.uid.trim() : '';
+  const amount = typeof body.amount === 'number' ? body.amount : Number.parseFloat(body.amount);
+  const memo = typeof body.memo === 'string' && body.memo.trim() ? body.memo.trim() : 'pi-nodejs README flow test';
+  const metadata =
+    body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+      ? body.metadata
+      : { source: 'scam-shield-readme-flow-test' };
+
+  if (!uid || !Number.isFinite(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'Provide JSON { "uid": "<pioneer app uid>", "amount": <positive number> }.' });
+  }
+
+  try {
+    const paymentId = await pi.createPayment({ uid, amount, memo, metadata });
+    const txid = await pi.submitPayment(paymentId);
+    const payment = await pi.completePayment(paymentId, txid);
+    return res.json({
+      success: true,
+      steps: ['createPayment', 'submitPayment', 'completePayment'],
+      paymentId,
+      txid,
+      payment,
+    });
+  } catch (err) {
+    console.error('[PI] pi-backend A2U readme flow error:', err.response?.data || err);
+    return res.status(502).json({
+      error: err.message || 'pi-backend flow failed',
+      detail: err.response?.data,
+    });
+  }
+});
+
 // Fallback — serve the SPA for any other GET
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -767,6 +869,25 @@ async function startServer() {
   await initMongo();
   app.listen(PORT, () => {
     console.log(`Scam Shield running → http://localhost:${PORT}`);
+    if (usePiBackendSdk()) {
+      if (getPiBackendNetwork()) {
+        console.log('[PI] pi-backend (pi-nodejs): getPayment + completePayment use PiNetwork; approve still uses REST.');
+      } else {
+        console.warn(
+          '[PI] USE_PI_BACKEND_SDK=true but PI_APP_WALLET_PRIVATE_SEED or PI_SERVER_API_KEY missing — payment fetch/complete fall back to axios.'
+        );
+      }
+    }
+    if (
+      String(process.env.PI_A2U_README_FLOW_TEST || '')
+        .trim()
+        .replace(/^['"]|['"]$/g, '')
+        .toLowerCase() === 'true'
+    ) {
+      console.warn(
+        '[PI] PI_A2U_README_FLOW_TEST is on: POST /api/dev/pi-backend-a2u-readme-flow sends Pi from your app wallet. Disable when done testing.'
+      );
+    }
   });
 }
 
