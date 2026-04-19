@@ -158,6 +158,18 @@ function getServerApiKey() {
   return process.env.PI_SERVER_API_KEY?.trim() || null;
 }
 
+/** When true, Pi donation approve/complete routes stay off even if PI_SERVER_API_KEY is set. */
+function isDonationsDisabledEnv() {
+  return String(process.env.DISABLE_PI_DONATIONS || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .toLowerCase() === 'true';
+}
+
+function areDonationsEnabled() {
+  return Boolean(getServerApiKey()) && !isDonationsDisabledEnv();
+}
+
 function getPiServerHeaders() {
   const apiKey = getServerApiKey();
   if (!apiKey) return null;
@@ -410,7 +422,8 @@ async function sendDiscordReport({ username, uid, url, description, category, wh
 app.get('/api/config', (req, res) => {
   res.json({
     sandbox: isSandboxEnv(),
-    donationsEnabled: Boolean(getServerApiKey()),
+    donationsEnabled: areDonationsEnabled(),
+    donationsKillSwitch: Boolean(getServerApiKey()) && isDonationsDisabledEnv(),
     piOnlyLogin: isPiOnlyLoginEnv(),
   });
 });
@@ -428,6 +441,9 @@ app.get('/validation-key.txt', (req, res) => {
 app.post('/api/payments/:paymentId/approve', async (req, res) => {
   if (!getServerApiKey()) {
     return res.status(503).json({ error: 'Donations are not configured on the server yet.' });
+  }
+  if (isDonationsDisabledEnv()) {
+    return res.status(503).json({ error: 'Donations are temporarily disabled on this server.' });
   }
 
   const paymentId = req.params.paymentId;
@@ -469,6 +485,9 @@ app.post('/api/payments/:paymentId/approve', async (req, res) => {
 app.post('/api/payments/:paymentId/complete', async (req, res) => {
   if (!getServerApiKey()) {
     return res.status(503).json({ error: 'Donations are not configured on the server yet.' });
+  }
+  if (isDonationsDisabledEnv()) {
+    return res.status(503).json({ error: 'Donations are temporarily disabled on this server.' });
   }
 
   const paymentId = req.params.paymentId;

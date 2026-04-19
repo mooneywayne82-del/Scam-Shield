@@ -7,7 +7,7 @@ let piAuth = null;
 let toastTimer = null;
 
 /** Runtime app config loaded from backend. */
-let appConfig = { sandbox: false, donationsEnabled: false, piOnlyLogin: false };
+let appConfig = { sandbox: false, donationsEnabled: false, donationsKillSwitch: false, piOnlyLogin: false };
 
 /** Same SDK URL as passphrase-secure `PI_NETWORK_CONFIG.SDK_URL`. */
 const PI_SDK_URL = 'https://sdk.minepi.com/pi-sdk.js';
@@ -37,6 +37,7 @@ async function refreshAppConfig() {
       appConfig = {
         sandbox: Boolean(cfg.sandbox),
         donationsEnabled: Boolean(cfg.donationsEnabled),
+        donationsKillSwitch: Boolean(cfg.donationsKillSwitch),
         piOnlyLogin: Boolean(cfg.piOnlyLogin),
       };
     }
@@ -192,7 +193,9 @@ function updateDonationAvailability() {
 
   if (!appConfig.donationsEnabled) {
     donateBtn.disabled = true;
-    note.textContent = 'Donations are optional. They are currently disabled until the Pi Server API key is configured on the server.';
+    note.textContent = appConfig.donationsKillSwitch
+      ? 'Donations are optional. They are temporarily turned off on this server.'
+      : 'Donations are optional. They are currently disabled until the Pi Server API key is configured on the server.';
     return;
   }
 
