@@ -4,6 +4,7 @@ const express = require('express');
 const axios = require('axios');
 const helmet = require('helmet');
 const session = require('express-session');
+const MemoryStore = require('memorystore')(session);
 const { MongoClient } = require('mongodb');
 const path = require('path');
 const FormData = require('form-data');
@@ -20,6 +21,22 @@ const MONGO_PAYMENTS_COLLECTION =
   process.env.MONGO_PAYMENTS_COLLECTION?.trim() || 'donation_payments';
 let mongoClient = null;
 let paymentCollection = null;
+
+/**
+ * Atlas TLS sometimes fails on cloud hosts with opaque "SSL alert number 80" when SRV resolves to IPv6 first.
+ * Render sets RENDER=true — default to IPv4 there. Override with MONGO_DNS_LOOKUP_FAMILY=4|6 or unset on Render to skip.
+ */
+function getMongoClientOptions() {
+  const opts = {
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 20000,
+  };
+  const fam = process.env.MONGO_DNS_LOOKUP_FAMILY?.trim();
+  if (fam === '4') opts.family = 4;
+  else if (fam === '6') opts.family = 6;
+  else if (String(process.env.RENDER || '').toLowerCase() === 'true') opts.family = 4;
+  return opts;
+}
 
 if (process.env.TRUST_PROXY === 'true') {
   app.set('trust proxy', 1);
@@ -73,6 +90,7 @@ app.use(
 app.use(express.json({ limit: '10kb' }));
 app.use(
   session({
+    store: new MemoryStore({ checkPeriod: 24 * 60 * 60 * 1000 }),
     secret: SESSION_SECRET || 'scam-shield-dev-session-secret',
     resave: false,
     saveUninitialized: false,
@@ -297,7 +315,7 @@ async function initMongo() {
   }
 
   try {
-    mongoClient = new MongoClient(MONGO_URI, { maxPoolSize: 10 });
+    mongoClient = new MongoClient(MONGO_URI, getMongoClientOptions());
     await mongoClient.connect();
     const db = mongoClient.db(MONGO_DB_NAME);
     paymentCollection = db.collection(MONGO_PAYMENTS_COLLECTION);
@@ -306,7 +324,8 @@ async function initMongo() {
     await paymentCollection.createIndex({ updatedAt: 1 });
     console.log(`[Payments] Mongo payment store ready (${MONGO_DB_NAME}.${MONGO_PAYMENTS_COLLECTION})`);
   } catch (err) {
-    console.error('[Payments] Mongo unavailable; falling back to in-memory store:', err.message);
+    const detail = err.cause ? `${err.message} (${err.cause.message || err.cause})` : err.message;
+    console.error('[Payments] Mongo unavailable; falling back to in-memory store:', detail);
     paymentCollection = null;
     if (mongoClient) {
       try {
